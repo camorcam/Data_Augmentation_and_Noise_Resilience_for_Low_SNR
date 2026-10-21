@@ -1,0 +1,90 @@
+{
+  "seed": 42,
+  "augmentation": {
+    "phase_prob": 0.5,
+    "noise_prob": 0,
+    "shift_prob": 0,
+    "scale_prob": 0
+  },
+  "max_drop_db": 6.0,
+  "epochs": 25,
+  "batch_size": 64,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "selection_metric": "val_low_snr_accuracy",
+  "initial_state_sha256": "78b93f3bf0e607e7b24797463aacb12675d28c6cf3972522421fd3dd6bd50d82",
+  "manifest_sha256": "fc4a2113235b7881afdd6a70b564a1e49c8cd9f09ac364226adece3a28050de4",
+  "dataset_manifest": {
+    "generator_version": "rf-v2-gaussian-gfsk",
+    "seed": 12345,
+    "classes": [
+      "BPSK",
+      "QPSK",
+      "8PSK",
+      "16QAM",
+      "64QAM",
+      "PAM4",
+      "CPFSK",
+      "GFSK"
+    ],
+    "snr_grid": [
+      -10,
+      -8,
+      -6,
+      -4,
+      -2,
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18
+    ],
+    "counts_per_class_per_snr": {
+      "train": 105,
+      "val": 24,
+      "test": 50
+    },
+    "partition_streams": [
+      [
+        0
+      ],
+      [
+        1
+      ],
+      [
+        2
+      ]
+    ],
+    "audit": {
+      "counts": {
+        "train": 12600,
+        "val": 2880,
+        "test": 6000
+      },
+      "duplicate_bursts": 0,
+      "unique_bursts": 21480
+    },
+    "files": {
+      "train": {
+        "sha256": "3bdf547ac66e53f90b8a0939c05d62e23152aef19beee8a40c32c229e3f02f30"
+      },
+      "val": {
+        "sha256": "462de0874daa2ce4c10be9d3f94dcee6b234f54ca1b6d3a44c2edd641f3db5be"
+      },
+      "test": {
+        "sha256": "6af6e36a16c53faa03075b52ec64678bc6b7482a96ac71a23f5fb9eb39ab6032"
+      }
+    }
+  },
+  "device": "cpu",
+  "torch": "2.14.1+cpu",
+  "numpy": "2.5.4",
+  "python": "3.12.3",
+  "config_name": "phase_only",
+  "num_workers": 0
+}

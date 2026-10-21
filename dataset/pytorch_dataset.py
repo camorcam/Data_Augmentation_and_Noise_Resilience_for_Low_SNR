@@ -3,11 +3,19 @@ from torch.utils.data import Dataset, DataLoader  # pyrefly: ignore [missing-imp
 import numpy as np  # pyrefly: ignore [missing-import]
 from typing import Tuple, Dict
 
+
 class WirelessIQDataset(Dataset):
     """
     PyTorch Dataset wrapper cho dữ liệu I/Q [N_batch, 2, 128].
     """
-    def __init__(self, x_data: np.ndarray, y_data: np.ndarray, snr_data: np.ndarray, transform=None):
+
+    def __init__(
+        self,
+        x_data: np.ndarray,
+        y_data: np.ndarray,
+        snr_data: np.ndarray,
+        transform=None,
+    ):
         """
         Tham số:
             x_data: np.ndarray shape [N, 2, 128]
@@ -29,27 +37,30 @@ class WirelessIQDataset(Dataset):
         snr_sample = self.snr[idx]
 
         if self.transform is not None:
-            x_sample = self.transform(x_sample)
+            x_sample = self.transform(x_sample, snr_db=float(snr_sample))
 
         return x_sample, y_sample, snr_sample
+
 
 def split_dataset(
     dataset_dict: Dict[str, np.ndarray],
     train_ratio: float = 0.70,
     val_ratio: float = 0.15,
     test_ratio: float = 0.15,
-    seed: int = 42
+    seed: int = 42,
 ) -> Tuple[WirelessIQDataset, WirelessIQDataset, WirelessIQDataset]:
     """
     Phân chia dữ liệu thành 70% Train, 15% Val, 15% Test với phân bổ ngẫu nhiên cố định seed.
     Đảm bảo Zero Data Leakage giữa tập Train, Val và Test.
     """
-    assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-5, "Tổng tỷ lệ phải bằng 1.0"
-    
-    x = dataset_dict['x']
-    y = dataset_dict['y']
-    snr = dataset_dict['snr']
-    
+    assert (
+        abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-5
+    ), "Tổng tỷ lệ phải bằng 1.0"
+
+    x = dataset_dict["x"]
+    y = dataset_dict["y"]
+    snr = dataset_dict["snr"]
+
     total_samples = len(x)
     rng = np.random.default_rng(seed)
     indices = rng.permutation(total_samples)

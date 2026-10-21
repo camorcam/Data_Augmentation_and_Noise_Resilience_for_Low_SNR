@@ -1,120 +1,134 @@
-import torch  # pyrefly: ignore [missing-import]
-import torch.nn as nn  # pyrefly: ignore [missing-import]
+"""RF transforms with a private RNG, independent of data ordering and dropout."""
+
 import math
-import numpy as np  # pyrefly: ignore [missing-import]
+import torch
+from torch import nn
+
 
 class RandomPhaseRotation(nn.Module):
-    """
-    Biến đổi Xoay pha ngẫu nhiên (Random Phase Rotation):
-    Xoay góc pha theta in [0, 2pi) ngẫu nhiên cho tín hiệu I/Q.
-    I' = I * cos(theta) - Q * sin(theta)
-    Q' = I * sin(theta) + Q * cos(theta)
-    """
-    def __init__(self, p: float = 0.8):
+    def __init__(self, p=0.5):
         super().__init__()
         self.p = p
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: torch.Tensor shape [2, 128] hoặc [N_batch, 2, 128]
-        """
-        if torch.rand(1).item() > self.p:
+    def forward(self, x, generator=None):
+        if torch.rand((), generator=generator).item() >= self.p:
             return x
+        angle = 2 * math.pi * torch.rand((), generator=generator).item()
+        i, q = x[..., 0, :], x[..., 1, :]
+        return torch.stack(
+            (
+                i * math.cos(angle) - q * math.sin(angle),
+                i * math.sin(angle) + q * math.cos(angle),
+            ),
+            dim=-2,
+        )
 
-        theta = torch.rand(1).item() * 2 * math.pi
-        cos_t = math.cos(theta)
-        sin_t = math.sin(theta)
-
-        if x.dim() == 2:
-            i_chan = x[0, :]
-            q_chan = x[1, :]
-            i_rot = i_chan * cos_t - q_chan * sin_t
-            q_rot = i_chan * sin_t + q_chan * cos_t
-            return torch.stack([i_rot, q_rot], dim=0)
-        else:
-            i_chan = x[:, 0, :]
-            q_chan = x[:, 1, :]
-            i_rot = i_chan * cos_t - q_chan * sin_t
-            q_rot = i_chan * sin_t + q_chan * cos_t
-            return torch.stack([i_rot, q_rot], dim=1)
 
 class AdditiveGaussianNoise(nn.Module):
+    """Reduce nominal SNR by U[0,max_drop_db], using expected signal power.
+
+    x already contains AWGN. Signal power estimate = P(x)*rho/(1+rho).
+    Added complex noise power = Psignal*(1/rho_target - 1/rho).
+    Finite-burst realized SNR varies. No renormalization after augmentation.
     """
-    Tiêm thêm Nhiễu Gaussian ngẫu nhiên (Additive Gaussian Noise Injection):
-    Tăng cường độ bền vững ở vùng SNR thấp (-10 dB đến +2 dB).
-    """
-    def __init__(self, std_min: float = 0.01, std_max: float = 0.08, p: float = 0.5):
+
+    def __init__(self, p=0.4, max_drop_db=6.0):
         super().__init__()
-        self.std_min = std_min
-        self.std_max = std_max
         self.p = p
+        self.max_drop_db = max_drop_db
+        if max_drop_db < 0:
+            raise ValueError("max_drop_db must be nonnegative")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if torch.rand(1).item() > self.p:
+    def forward(self, x, snr_db, generator=None):
+        if torch.rand((), generator=generator).item() >= self.p:
             return x
+        if x.ndim != 2:
+            raise ValueError("Noise augmentation expects a single [2,L] sample")
+        rho = 10.0 ** (float(snr_db) / 10)
+        drop = self.max_drop_db * torch.rand((), generator=generator).item()
+        target = rho * 10 ** (-drop / 10)
+        signal_power = x.square().sum(dim=0).mean() * rho / (1 + rho)
+        added_power = signal_power * (1 / target - 1 / rho)
+        noise = torch.randn(
+            x.shape, generator=generator, dtype=x.dtype, device=x.device
+        )
+        return x + noise * torch.sqrt(torch.clamp(added_power / 2, min=0))
 
-        std = torch.empty(1).uniform_(self.std_min, self.std_max).item()
-        noise = torch.randn_like(x) * std
-        return x + noise
 
 class TimeShiftJitter(nn.Module):
-    """
-    Jitter dịch thời gian ngẫu nhiên (Time-shift Jitter):
-    Dịch vòng tín hiệu dọc theo trục thời gian (sample length = 128).
-    """
-    def __init__(self, max_shift: int = 8, p: float = 0.5):
+    def __init__(self, p=0.4, max_shift=8):
         super().__init__()
-        self.max_shift = max_shift
         self.p = p
+        self.max_shift = max_shift
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if torch.rand(1).item() > self.p:
+    def forward(self, x, generator=None):
+        if torch.rand((), generator=generator).item() >= self.p:
             return x
+        k = int(
+            torch.randint(
+                -self.max_shift, self.max_shift + 1, (), generator=generator
+            ).item()
+        )
+        return torch.roll(x, k, dims=-1)
 
-        shift = torch.randint(-self.max_shift, self.max_shift + 1, (1,)).item()
-        if shift == 0:
-            return x
-        
-        return torch.roll(x, shifts=shift, dims=-1)
 
 class AmplitudeScaling(nn.Module):
-    """
-    Co giãn biên độ ngẫu nhiên (Amplitude Scaling):
-    Nội suy biên độ trong khoảng [scale_min, scale_max].
-    """
-    def __init__(self, scale_min: float = 0.85, scale_max: float = 1.15, p: float = 0.5):
+    def __init__(self, p=0.3, scale_min=0.85, scale_max=1.15):
         super().__init__()
-        self.scale_min = scale_min
-        self.scale_max = scale_max
         self.p = p
+        self.lo = scale_min
+        self.hi = scale_max
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if torch.rand(1).item() > self.p:
+    def forward(self, x, generator=None):
+        if torch.rand((), generator=generator).item() >= self.p:
             return x
+        return x * (
+            self.lo + (self.hi - self.lo) * torch.rand((), generator=generator).item()
+        )
 
-        scale = torch.empty(1).uniform_(self.scale_min, self.scale_max).item()
-        return x * scale
 
 class RFAugmentationPipeline(nn.Module):
-    """
-    Pipeline tổng hợp tất cả các phép Data Augmentation trên miền RF vật lý cho Topic 4.
-    """
     def __init__(
         self,
-        phase_prob: float = 0.8,
-        noise_prob: float = 0.7,
-        shift_prob: float = 0.5,
-        scale_prob: float = 0.5
+        phase_prob=0.5,
+        noise_prob=0.4,
+        shift_prob=0.4,
+        scale_prob=0.3,
+        seed=0,
+        max_drop_db=6,
     ):
         super().__init__()
-        self.phase_rot = RandomPhaseRotation(p=phase_prob)
-        self.noise_inj = AdditiveGaussianNoise(p=noise_prob)
-        self.time_shift = TimeShiftJitter(p=shift_prob)
-        self.amp_scale = AmplitudeScaling(p=scale_prob)
+        for v in (phase_prob, noise_prob, shift_prob, scale_prob):
+            if not 0 <= v <= 1:
+                raise ValueError("Probabilities must be in [0,1]")
+        self.generator = torch.Generator().manual_seed(seed)
+        self.phase_rot = RandomPhaseRotation(phase_prob)
+        self.noise_inj = AdditiveGaussianNoise(noise_prob, max_drop_db)
+        self.time_shift = TimeShiftJitter(shift_prob)
+        self.amp_scale = AmplitudeScaling(scale_prob)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.phase_rot(x)
-        x = self.noise_inj(x)
-        x = self.time_shift(x)
-        x = self.amp_scale(x)
-        return x
+    def forward(self, x, snr_db=None):
+        if x.device.type != "cpu" or x.ndim != 2:
+            raise ValueError(
+                "Use pipeline per CPU dataset sample [2,L], with num_workers=0"
+            )
+        g = self.generator
+        x = self.phase_rot(x, g)
+        if self.noise_inj.p > 0:
+            if snr_db is None:
+                raise ValueError("Nominal snr_db is required for calibrated noise")
+            x = self.noise_inj(x, snr_db, g)
+        x = self.time_shift(x, g)
+        return self.amp_scale(x, g)
+
+
+CONFIGS = {
+    "baseline": dict(phase_prob=0, noise_prob=0, shift_prob=0, scale_prob=0),
+    "phase_only": dict(phase_prob=0.5, noise_prob=0, shift_prob=0, scale_prob=0),
+    "noise_only": dict(phase_prob=0, noise_prob=0.4, shift_prob=0, scale_prob=0),
+    "shift_only": dict(phase_prob=0, noise_prob=0, shift_prob=0.4, scale_prob=0),
+    "scale_only": dict(phase_prob=0, noise_prob=0, shift_prob=0, scale_prob=0.3),
+    "augmented_full": dict(
+        phase_prob=0.5, noise_prob=0.4, shift_prob=0.4, scale_prob=0.3
+    ),
+}

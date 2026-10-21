@@ -1,8 +1,0 @@
-{
-  "python.defaultInterpreterPath": "C:\\Users\\Cam\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
-  "python.analysis.extraPaths": [
-    "${workspaceFolder}"
-  ],
-  "python.analysis.autoSearchPaths": true,
-  "python.analysis.typeCheckingMode": "off"
-}

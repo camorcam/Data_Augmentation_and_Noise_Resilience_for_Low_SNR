@@ -1,124 +1,119 @@
-# EE136IU Capstone Mini-Project — Topic 4: Data Augmentation & Noise Resilience for Low-SNR
+# Low-SNR Automatic Modulation Classification
 
-![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange.svg)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.25%2B-red.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+EE136IU project evaluating RF-inspired data augmentation for low-SNR Automatic
+Modulation Classification. The final experiment compares a baseline 1D CNN
+with validation-selected `phase_only` augmentation across five paired seeds.
 
-Dự án Capstone Mini-Project môn học **EE136IU: Machine Learning for Wireless Communications**.  
-**Đề tài Topic 4**: *Tăng cường Dữ liệu trên Miền Vật lý & Nâng cao Khả năng Kháng nhiễu Bộ thu trong Vùng SNR Thấp (-10 dB đến +2 dB)*.
-
----
-
-## 🚀 Hướng dẫn Nhanh (1-Command Quickstart)
-
-Tái tạo toàn bộ tập dữ liệu, chạy thực nghiệm đánh giá và mở Web App Demo chỉ với **1 dòng lệnh trên Terminal**:
-
-```powershell
-streamlit run app.py
-```
-
-Ứng dụng Web tương tác sẽ khởi chạy tại: `http://localhost:8501`.
-
----
-
-## 🛠️ Cài đặt Môi trường (Installation)
-
-1. **Tải mã nguồn về máy hoặc Clone Repository**:
-   ```bash
-   git clone https://github.com/your-username/EE136IU_Topic4_Capstone.git
-   cd EE136IU_Topic4_Capstone
-   ```
-
-2. **Cài đặt các thư viện phụ thuộc**:
-   ```powershell
-   py -m pip install -r requirements.txt
-   ```
-
----
-
-## 📁 Cấu trúc Thư mục Dự án (Modular Architecture)
+## Structure
 
 ```text
-├── dataset/                   # Module Tiền xử lý & Sinh tín hiệu I/Q Baseband
-│   ├── __init__.py
-│   ├── preprocessing.py       # Chuẩn hóa RMS (E_rms = 1.0) & định dạng Tensor [N, 2, 128]
-│   ├── signal_generator.py    # Sinh 8 lớp modulation & lưới 15 điểm SNR Grid (-10 dB đến +18 dB)
-│   └── pytorch_dataset.py     # PyTorch Dataset wrapper & Phân chia 70/15/15 Zero-Leakage Split
-├── models/                    # Module Kiến trúc Mô hình & Transforms
-│   ├── __init__.py
-│   ├── transforms.py          # RFAugmentationPipeline (Random Phase, AWGN, Time Shift, Scaling)
-│   └── network.py             # Kiến trúc 1D CNN 3 khối (ModulationClassifier1DCNN)
-├── utils/                     # Module Trực quan hóa & Đồ thị
-│   ├── __init__.py
-│   └── plot_benchmarks.py     # Xuất đồ thị Accuracy, Macro-F1 & Confusion Matrices
-├── checkpoint/                # Thư mục lưu Model Weights & Metrics JSON
-│   ├── baseline_1d_cnn.pth    # Weights Mô hình Baseline
-│   ├── augmented_1d_cnn.pth   # Weights Mô hình Topic 4 (Augmented)
-│   └── benchmark_results.json # Bảng số liệu benchmark 15 điểm SNR
-├── plots/                     # Thư mục lưu ảnh đồ thị xuất ra
-│   ├── accuracy_vs_snr.png
-│   ├── macro_f1_vs_snr.png
-│   ├── confusion_matrices_low_snr.png
-│   └── confusion_matrices_high_snr.png
-├── app.py                     # Web App Demo Tương tác Streamlit
-├── train.py                   # Script Huấn luyện tự động 2 mô hình
-├── evaluate.py                # Script Đánh giá thực nghiệm tập Test
-├── test_phase1.py             # Unit test Giai đoạn 1 (Dataset & Preprocessing)
-├── test_phase2.py             # Unit test Giai đoạn 2 (Augmentation & Model)
-├── requirements.txt           # Thư viện phụ thuộc
-├── slide_style_requirements.md# Quy chuẩn thiết kế Slide thuyết trình
-├── phase4_failure_analysis_report.md # Báo cáo Phân tích Nguyên nhân Lỗi Vật lý
-└── README.md                  # Hướng dẫn dự án
+.
+├── dataset/                 # Signal generation and frozen dataset I/O
+├── models/                  # 1D CNN and augmentation transforms
+├── data/frozen_v2/          # Frozen train/validation/test data
+├── runs/ablation/           # Checkpoints and training histories
+├── results/final_phase/     # Final metrics, predictions and plots
+├── tests/                   # Pipeline tests
+├── train.py                 # Train experiment configurations
+├── summarize_validation.py  # Select configuration on validation
+├── evaluate.py              # Evaluate the frozen test set
+├── plot_results.py          # Generate result figures
+├── app.py                   # Streamlit demo
+├── PRESENTATION_12M.md      # Presentation key points
+└── PROJECT_OVERVIEW.md      # Detailed methodology and results
 ```
 
----
+## Setup
 
-## 📊 Quy trình Chạy Dự án theo Từng Bước (Workflow Execution)
+Python 3.10+ is recommended.
 
-### Bước 1: Kiểm thử Tiền xử lý Tín hiệu & Tensor Shape
 ```powershell
-py test_phase1.py
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
-*Đảm bảo tensor đạt shape `[N_batch, 2, 128]` và chuẩn hóa RMS năng lượng $E_{\text{rms}} = 1.0$.*
 
-### Bước 2: Kiểm thử Pipeline Augmentation & Forward Pass Mô hình
+For CUDA, install the appropriate PyTorch build for your system.
+
+## Run the existing demo
+
+The frozen data, trained checkpoints and final results are already included.
+
 ```powershell
-py test_phase2.py
+python -m streamlit run app.py
 ```
-*Kiểm tra 4 phép biến đổi miền RF vật lý và kiến trúc 1D CNN (175,432 parameters).*
 
-### Bước 3: Huấn luyện 2 Mô hình (Baseline vs Augmented)
+Defaults: `runs/ablation`, seed `42`, configuration `phase_only`.
+
+## Reproduce the experiment
+
+Run these steps in order. Skip step 1 when reusing `data/frozen_v2/`.
+
+### 1. Generate data
+
 ```powershell
-py train.py
+python -m dataset.storage --out data/frozen_v2
 ```
-*Huấn luyện song song Mô hình Baseline và Mô hình Topic 4 trên 18,000 bursts tín hiệu, lưu weights vào `checkpoint/`.*
 
-### Bước 4: Đánh giá Benchmark & Trực quan hóa Đồ thị
+### 2. Train all candidates
+
 ```powershell
-py evaluate.py
-py utils/plot_benchmarks.py
+python train.py `
+  --data data/frozen_v2 `
+  --out runs/ablation `
+  --configs baseline phase_only noise_only shift_only scale_only augmented_full `
+  --seeds 42 43 44 45 46
 ```
-*Đánh giá độ chính xác trên 15 điểm SNR Grid và xuất đồ thị ra thư mục `plots/`.*
 
-### Bước 5: Mở Web App Demo Tương tác
+### 3. Compare validation results
+
 ```powershell
-streamlit run app.py
+python summarize_validation.py --runs runs/ablation --seeds 42 43 44 45 46
 ```
 
----
+The completed experiment selects `phase_only`. Configuration selection must not
+use test results.
 
-## 🔬 Kết quả Thực nghiệm Nổi bật (Key Results)
+### 4. Evaluate the selected pair
 
-| Tiêu chí Đánh giá | Mô hình Baseline 1D CNN | Mô hình Augmented 1D CNN (Topic 4) | Cải thiện (Gain) |
-| :--- | :---: | :---: | :---: |
-| **Validation Loss** | $0.8757$ | **$0.7670$** | **Giảm Loss -0.1087** |
-| **Validation Accuracy** | $65.33\%$ | **$66.07\%$** | **+0.74%** |
-| **Độ chính xác SNR = -8 dB** | $25.86\%$ | **$30.17\%$** | **+4.31% gain** |
-| **Độ chính xác SNR = -2 dB** | $57.85\%$ | **$61.16\%$** | **+3.31% gain** |
-| **Bất biến Pha ($\theta \in [0, 2\pi)$)** | Nhầm lẫn (Acc < 25%) | Dự đoán đúng 100% | Kháng lệch pha tuyệt đối |
+```powershell
+python evaluate.py `
+  --data data/frozen_v2 `
+  --runs runs/ablation `
+  --augmented-config phase_only `
+  --out results/final_phase `
+  --seeds 42 43 44 45 46
+```
 
----
+### 5. Generate plots
 
-## 📜 Giấy phép & Tác quyền (License)
-Dự án được phát triển phục vụ báo cáo Midterm môn học **EE136IU** tại Trường Đại học Quốc tế - ĐHQG TP.HCM.
+```powershell
+python plot_results.py --results results/final_phase --runs runs/ablation
+```
+
+## Tests
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Quick CPU smoke run:
+
+```powershell
+python -m dataset.storage --out data/smoke --train-per-cell 2 --val-per-cell 2 --test-per-cell 2
+python train.py --data data/smoke --out runs/smoke --seeds 42 43 --epochs 1 --device cpu
+python evaluate.py --data data/smoke --runs runs/smoke --out results/smoke --seeds 42 43 --device cpu
+python plot_results.py --runs runs/smoke --results results/smoke
+```
+
+The smoke run checks integration only; its metrics are not research results.
+
+## Outputs
+
+- `runs/ablation/seed_*/<config>/`: checkpoints and training/validation history
+- `results/final_phase/benchmark_results.json`: final metrics
+- `results/final_phase/predictions.npz`: test predictions
+- `results/final_phase/plots/`: accuracy, Macro-F1, loss and confusion plots
+
+Results apply to this frozen synthetic benchmark. Constant phase rotation is
+not CFO, and real-world RF generalization is not established.

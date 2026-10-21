@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+data/
+
+build_presentation_12min.py

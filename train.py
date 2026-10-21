@@ -1,224 +1,212 @@
-"""
-Script Huấn luyện & Thực nghiệm So sánh cho Giai đoạn 3 (Phase 3):
-- Huấn luyện Mô hình A: Baseline 1D CNN (không dùng Data Augmentation)
-- Huấn luyện Mô hình B: Augmented 1D CNN (dùng RFAugmentationPipeline cho Topic 4)
-- Lưu weights vào thư mục checkpoint/ (baseline_model.pth & augmented_model.pth)
-"""
-import sys
-import os
-import time
+"""Train paired seed/config runs; validation only, never inspect test predictions."""
+
+import argparse
+import copy
+import hashlib
 import json
-import torch  # pyrefly: ignore [missing-import]
-import torch.nn as nn  # pyrefly: ignore [missing-import]
-from torch.utils.data import DataLoader  # pyrefly: ignore [missing-import]
-import numpy as np  # pyrefly: ignore [missing-import]
+import os
+import platform
+import random
+from pathlib import Path
 
-# Cấu hình UTF-8 cho Windows console output
-sys.stdout.reconfigure(encoding='utf-8')
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+from dataset.storage import load_partitions
+from dataset.pytorch_dataset import WirelessIQDataset
+from models.network import ModulationClassifier1DCNN
+from models.transforms import RFAugmentationPipeline, CONFIGS
+from metrics import report
 
-# Import các module đã tạo ở Phase 1 và Phase 2
-from dataset import (  # pyrefly: ignore [missing-import]
-    generate_synthetic_dataset,
-    WirelessIQDataset,
-    MODULATION_CLASSES,
-    SNR_GRID
-)
-from dataset.pytorch_dataset import split_dataset  # pyrefly: ignore [missing-import]
-from models import (  # pyrefly: ignore [missing-import]
-    ModulationClassifier1DCNN,
-    RFAugmentationPipeline
-)
 
-def set_seed(seed: int = 42):
-    """Cố định random seed để đảm bảo 100% khả năng tái tạo kết quả (Reproducibility)."""
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+def seed_everything(seed):
+    random.seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True)
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
-    """Huấn luyện 1 epoch."""
-    model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
 
-    for x_batch, y_batch, _ in dataloader:
-        x_batch = x_batch.to(device)
-        y_batch = y_batch.to(device)
+def state_hash(state):
+    h = hashlib.sha256()
+    for k, v in sorted(state.items()):
+        h.update(k.encode())
+        h.update(v.cpu().numpy().tobytes())
+    return h.hexdigest()
 
-        optimizer.zero_grad()
-        logits = model(x_batch)
-        loss = criterion(logits, y_batch)
-        loss.backward()
-        optimizer.step()
 
-        running_loss += loss.item() * len(y_batch)
-        _, preds = torch.max(logits, dim=1)
-        correct += (preds == y_batch).sum().item()
-        total += len(y_batch)
+def loader(part, batch, shuffle=False, seed=0, transform=None):
+    ds = WirelessIQDataset(part["x"], part["y"], part["snr"], transform)
+    return DataLoader(
+        ds,
+        batch_size=batch,
+        shuffle=shuffle,
+        num_workers=0,
+        generator=torch.Generator().manual_seed(seed),
+    )
 
-    epoch_loss = running_loss / total
-    epoch_acc = correct / total
-    return epoch_loss, epoch_acc
 
-def evaluate(model, dataloader, criterion, device):
-    """Đánh giá mô hình trên tập Validation hoặc Test."""
+@torch.no_grad()
+def predict(model, batches, device):
     model.eval()
-    running_loss = 0.0
-    correct = 0
-    total = 0
+    ys = []
+    ps = []
+    ss = []
+    loss = 0.0
+    n = 0
+    for x, y, s in batches:
+        logits = model(x.to(device))
+        yt = y.to(device)
+        loss += torch.nn.functional.cross_entropy(logits, yt, reduction="sum").item()
+        n += len(y)
+        ys.append(y.numpy())
+        ps.append(logits.argmax(1).cpu().numpy())
+        ss.append(s.numpy())
+    return loss / n, np.concatenate(ys), np.concatenate(ps), np.concatenate(ss)
 
-    with torch.no_grad():
-        for x_batch, y_batch, _ in dataloader:
-            x_batch = x_batch.to(device)
-            y_batch = y_batch.to(device)
 
-            logits = model(x_batch)
-            loss = criterion(logits, y_batch)
+def run(a):
+    if a.epochs < 1 or a.batch_size < 1:
+        raise ValueError("epochs and batch size must be positive")
+    parts, manifest = load_partitions(a.data)
+    manifest_hash = hashlib.sha256(
+        (Path(a.data) / "manifest.json").read_bytes()
+    ).hexdigest()
+    device = torch.device(a.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    for seed in a.seeds:
+        seed_everything(seed)
+        initial = copy.deepcopy(ModulationClassifier1DCNN().state_dict())
+        initial_hash = state_hash(initial)
+        for config_name in a.configs:
+            path = out / f"seed_{seed}" / config_name
+            if path.exists() and any(path.iterdir()):
+                raise FileExistsError(f"Refusing to overwrite {path}")
+            path.mkdir(parents=True, exist_ok=True)
+            cfg = {
+                "seed": seed,
+                "augmentation": CONFIGS[config_name],
+                "max_drop_db": a.max_drop_db,
+                "epochs": a.epochs,
+                "batch_size": a.batch_size,
+                "lr": a.lr,
+                "weight_decay": 1e-4,
+                "selection_metric": a.selection_metric,
+                "initial_state_sha256": initial_hash,
+                "manifest_sha256": manifest_hash,
+                "dataset_manifest": manifest,
+                "device": str(device),
+                "torch": torch.__version__,
+                "numpy": np.__version__,
+                "python": platform.python_version(),
+                "config_name": config_name,
+                "num_workers": 0,
+            }
+            (path / "config.json").write_text(json.dumps(cfg, indent=2))
+            # Isolate dropout RNG from initialization, shuffle and augmentation RNGs.
+            model = ModulationClassifier1DCNN()
+            model.load_state_dict(initial)
+            model.to(device)
+            seed_everything(seed + 10000)
+            transform = (
+                None
+                if config_name == "baseline"
+                else RFAugmentationPipeline(
+                    **CONFIGS[config_name], seed=seed + 20000, max_drop_db=a.max_drop_db
+                )
+            )
+            train = loader(parts["train"], a.batch_size, True, seed + 30000, transform)
+            clean = loader(parts["train"], a.batch_size)
+            val = loader(parts["val"], a.batch_size)
+            opt = torch.optim.Adam(model.parameters(), lr=a.lr, weight_decay=1e-4)
+            sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.epochs)
+            best = -float("inf")
+            history = []
+            for epoch in range(1, a.epochs + 1):
+                model.train()
+                loss_sum = 0.0
+                correct = 0
+                n = 0
+                lr = opt.param_groups[0]["lr"]
+                for x, y, _ in train:
+                    x, y = x.to(device), y.to(device)
+                    opt.zero_grad(set_to_none=True)
+                    logits = model(x)
+                    loss = torch.nn.functional.cross_entropy(logits, y)
+                    loss.backward()
+                    opt.step()
+                    loss_sum += loss.item() * len(y)
+                    correct += (logits.argmax(1) == y).sum().item()
+                    n += len(y)
+                vl, vy, vp, vs = predict(model, val, device)
+                vr = report(vy, vp, vs, manifest["snr_grid"])
+                cl, cy, cp, cs = predict(model, clean, device)
+                row = {
+                    "epoch": epoch,
+                    "lr": lr,
+                    "train_aug_loss": loss_sum / n,
+                    "train_aug_accuracy": correct / n,
+                    "train_clean_eval_loss": cl,
+                    "train_clean_eval_accuracy": float(np.mean(cy == cp)),
+                    "val_loss": vl,
+                    "val_accuracy": vr["global"]["accuracy"],
+                    "val_low_snr_accuracy": vr["low_snr_mean_accuracy"],
+                }
+                history.append(row)
+                sched.step()
+                metric = row[a.selection_metric]
+                if metric > best:
+                    best = metric
+                    torch.save(
+                        {
+                            "model_state_dict": model.state_dict(),
+                            "epoch": epoch,
+                            "config": cfg,
+                            "selection_value": best,
+                            "optimizer_state_dict": opt.state_dict(),
+                            "scheduler_state_dict": sched.state_dict(),
+                        },
+                        path / "best.pth",
+                    )
+                    (path / "validation.json").write_text(json.dumps(vr, indent=2))
+                (path / "history.json").write_text(json.dumps(history, indent=2))
+                print(
+                    f'{seed=} {config_name} {epoch=}: val={row["val_accuracy"]:.4f} low={row["val_low_snr_accuracy"]:.4f}',
+                    flush=True,
+                )
 
-            running_loss += loss.item() * len(y_batch)
-            _, preds = torch.max(logits, dim=1)
-            correct += (preds == y_batch).sum().item()
-            total += len(y_batch)
-
-    epoch_loss = running_loss / total
-    epoch_acc = correct / total
-    return epoch_loss, epoch_acc
-
-def train_model(
-    model_name: str,
-    train_dataset: WirelessIQDataset,
-    val_dataset: WirelessIQDataset,
-    epochs: int = 20,
-    batch_size: int = 64,
-    lr: float = 0.001,
-    save_dir: str = 'checkpoint'
-):
-    """
-    Hàm chính huấn luyện mô hình với thanh tiến trình sạch sẽ.
-    """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"\n⚡ Đang huấn luyện [{model_name}] trên thiết bị: {device}")
-    
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f"{model_name.lower().replace(' ', '_')}.pth")
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
-    model = ModulationClassifier1DCNN(num_classes=len(MODULATION_CLASSES)).to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-
-    best_val_acc = 0.0
-    history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
-
-    start_time = time.time()
-    for epoch in range(1, epochs + 1):
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-        scheduler.step()
-
-        history['train_loss'].append(train_loss)
-        history['train_acc'].append(train_acc)
-        history['val_loss'].append(val_loss)
-        history['val_acc'].append(val_acc)
-
-        # Lưu checkpoint có Val Acc tốt nhất
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_acc': val_acc,
-                'val_loss': val_loss
-            }, save_path)
-            is_best = "★ [BEST]"
-        else:
-            is_best = ""
-
-        if epoch % 5 == 0 or epoch == epochs or is_best:
-            print(f"  Epoch [{epoch:02d}/{epochs:02d}] | Train Loss: {train_loss:.4f} Acc: {train_acc*100:.2f}% | Val Loss: {val_loss:.4f} Acc: {val_acc*100:.2f}% {is_best}")
-
-    total_time = time.time() - start_time
-    print(f"  ✓ Hoàn tất huấn luyện [{model_name}] trong {total_time:.2f}s | Val Acc tốt nhất: {best_val_acc*100:.2f}%")
-    print(f"  ✓ Weights đã được lưu tại: {save_path}")
-
-    return history, save_path
 
 def main():
-    print("==========================================================")
-    print("🚀 BẮT ĐẦU GIAI ĐOẠN 3 (PHASE 3: TRAINING & BENCHMARKING)")
-    print("==========================================================")
-
-    # 1. Cố định random seed
-    set_seed(42)
-
-    # 2. Sinh tập dữ liệu I/Q baseband chuẩn
-    print("\n[1] Chuẩn bị tập dữ liệu I/Q baseband (18,000 bursts)...")
-    dataset_dict = generate_synthetic_dataset(
-        samples_per_class_per_snr=150, # 150 mẫu * 8 lớp * 15 điểm SNR = 18,000 bursts
-        seed=42
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--data", default="data/frozen_v2")
+    p.add_argument("--out", default="runs/v2")
+    p.add_argument(
+        "--configs",
+        nargs="+",
+        choices=list(CONFIGS),
+        default=["baseline", "augmented_full"],
     )
-
-    # 3. Phân chia 70% Train, 15% Val, 15% Test
-    train_ds_raw, val_ds, test_ds = split_dataset(
-        dataset_dict,
-        train_ratio=0.70,
-        val_ratio=0.15,
-        test_ratio=0.15,
-        seed=42
+    p.add_argument("--seeds", nargs="+", type=int, default=[42, 43, 44, 45, 46])
+    p.add_argument("--epochs", type=int, default=25)
+    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--lr", type=float, default=0.001)
+    p.add_argument("--max-drop-db", type=float, default=6.0)
+    p.add_argument(
+        "--selection-metric",
+        choices=["val_accuracy", "val_low_snr_accuracy"],
+        default="val_low_snr_accuracy",
     )
-    print(f"  ✓ Tập Train gốc: {len(train_ds_raw)} mẫu | Val: {len(val_ds)} mẫu | Test: {len(test_ds)} mẫu")
+    p.add_argument("--device", choices=["cpu", "cuda"])
+    a = p.parse_args()
+    if len(a.seeds) != len(set(a.seeds)) or len(a.configs) != len(set(a.configs)):
+        raise ValueError("Duplicate seeds/configs")
+    run(a)
 
-    # 4. Tạo tập Train cho Mô hình Topic 4 (tích hợp RFAugmentationPipeline tinh chỉnh)
-    aug_pipeline = RFAugmentationPipeline(
-        phase_prob=0.5,
-        noise_prob=0.4,
-        shift_prob=0.4,
-        scale_prob=0.3
-    )
-    
-    # Tạo Dataset có Augmentation từ dữ liệu numpy của train_ds_raw
-    train_ds_augmented = WirelessIQDataset(
-        x_data=train_ds_raw.x.numpy(),
-        y_data=train_ds_raw.y.numpy(),
-        snr_data=train_ds_raw.snr.numpy(),
-        transform=aug_pipeline
-    )
 
-    # 5. Huấn luyện Mô hình A (Baseline 1D CNN - Không dùng Augmentation)
-    print("\n----------------------------------------------------------")
-    print("🔹 BƯỚC 3.1: HUẤN LUYỆN MÔ HÌNH A (BASELINE 1D CNN)")
-    print("----------------------------------------------------------")
-    history_baseline, path_baseline = train_model(
-        model_name="Baseline 1D CNN",
-        train_dataset=train_ds_raw,
-        val_dataset=val_ds,
-        epochs=25,
-        batch_size=64,
-        lr=0.001
-    )
-
-    # 6. Huấn luyện Mô hình B (Augmented 1D CNN - Topic 4)
-    print("\n----------------------------------------------------------")
-    print("🔹 BƯỚC 3.2: HUẤN LUYỆN MÔ HÌNH B (AUGMENTED 1D CNN - TOPIC 4)")
-    print("----------------------------------------------------------")
-    history_augmented, path_augmented = train_model(
-        model_name="Augmented 1D CNN",
-        train_dataset=train_ds_augmented,
-        val_dataset=val_ds,
-        epochs=25,
-        batch_size=64,
-        lr=0.001
-    )
-
-    print("\n==========================================================")
-    print("✅ HOÀN THÀNH HUẤN LUYỆN CẢ 2 MÔ HÌNH CHO GIAI ĐOẠN 3!")
-    print("==========================================================")
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
