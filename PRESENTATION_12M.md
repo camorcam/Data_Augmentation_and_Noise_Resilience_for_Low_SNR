@@ -4,6 +4,12 @@
 
 - Data augmentation cho AMC ở SNR thấp.
 - Mục tiêu: kiểm tra augmentation có thực sự cải thiện kết quả hay không.
+- Thành viên:
+  - Bạch Lan Chi — EEEEIU23026
+  - Tạ Nguyễn Hoàng Minh — EEEEIU22084
+  - Trần Lâm Như Quỳnh — EEEEIU23022
+  - Nguyễn Quang Trung — EEEEIU21053
+  - Phạm Trần Nhật Thành — EEEEIU21050
 
 ## Slide 2 — Bài toán AMC
 
@@ -84,3 +90,21 @@
 - Chưa chứng minh khả năng chống CFO, fading hoặc multipath.
 - Chưa chứng minh generalization sang dữ liệu RF thực.
 - Hướng tiếp theo: realistic channel, nhiều dataset seed và over-the-air data.
+
+## Slide 13–16 — Appendix
+
+- Ý nghĩa của training seed 42–46.
+- Phân biệt constant phase offset và CFO.
+- Giải thích giới hạn của chỉ số SNR80.
+- Các artifact dùng để tái lập kết quả.
+
+## Slide 17 — Recorded demo
+
+- Video `video_converted.mp4` được nhúng trực tiếp vào slide.
+- Dùng làm phương án dự phòng nếu live demo gặp sự cố.
+- Nhấp vào video để phát.
+
+## Slide 18 — Thank You
+
+- Cảm ơn người nghe.
+- Mời giảng viên và các bạn đặt câu hỏi.
